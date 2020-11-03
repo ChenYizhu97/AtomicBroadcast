@@ -8,14 +8,14 @@ Implementation of atomic broadcast using Paxos
 ## Start an instance of a role
 
 ```shell
-cd ATOMICBROADCAST
+cd AtomicBroadcast
 ./paxos.py test/paxos.conf role_name id
 ```
 
 or for specific role
 
 ```shell
-cd ATOMICBROADCAST
+cd AtomicBroadcast
 ./acceptor.sh id test/paxos.conf
 ./proposer.sh id test/paxos.conf
 ...
@@ -25,7 +25,7 @@ You can replace test/paxo.con with the path of your config file.
 
 ## Use the test script in directory test
 ```shell
-cd ATOMICBROADCAST/test
+cd AtomicBroadcast/test
 ./run_1acceptor.sh ../ 100
 ./any_test_script ../ number_of_values_each_client
 ...
