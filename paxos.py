@@ -5,6 +5,8 @@ import struct
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+import threading
+import signal
 
 class Role(object):
     def __init__(self, role_name, host_port):
@@ -30,6 +32,8 @@ class Role(object):
         self.set_multicast_reciever()
         self.set_multicast_sender()
 
+        signal.signal(signal.SIGTERM, Role.signal_term_handle)
+
     @staticmethod
     def parse_config(path_to_config):
         config = {}
@@ -38,6 +42,11 @@ class Role(object):
                 (role, host, port) = line.split()
                 config[role] = (host, int(port))
         return config
+
+    @staticmethod
+    def signal_term_handle(signal, frame):
+        logging.info("Killed by signal term...")
+        sys.exit(0)
 
 class Acceptor(Role):
     def __init__(self, config, id):
@@ -55,14 +64,24 @@ class Acceptor(Role):
         super().run()
         print("{} {} starts running...".format(self.role, self.id))
         
-        with ThreadPoolExecutor() as executor:
-            executor.submit(self.forward_to_learner)
-            executor.submit(self.distribute_message_recieved)
+        threads = []
+
+        thread_distribute_message = threading.Thread(target=self.distribute_message_recieved, daemon=True)
+        thread_forward_message = threading.Thread(target=self.forward_to_learner, daemon=True)
+
+        threads.append(thread_forward_message)
+        threads.append(thread_distribute_message)
+
+        for thread in threads:
+            thread.start()
+
+        while True:
+            time.sleep(1)
+            logging.info("Main Thread running...")
     
     def distribute_message_recieved(self):
         handle_dict = {
             "decide": self.handle_decide,
-            "forward": self.handle_forward
         }
         while True:
 
@@ -81,29 +100,18 @@ class Acceptor(Role):
         if not message in self.message_recieved:
             self.message_recieved.add(message)
 
-    def handle_forward(self, message):
-        message = tuple(message.split(","))
-        logging.info("{} {} recieved forward:{},{}".format(self.role, self.id, *message))
-        sequence, message = message
-        if int(sequence) >= self.forward_count:
-            self.forward_count = int(sequence) + 1
-            logging.info("{} {} self.forward_count in thread distrubute message is {}".format(self.role, self.id, self.forward_count))
-            self.message_forward.add(message)
-            if not message in self.message_recieved:
-                self.message_recieved.add(message)
-
     def forward_to_learner(self):
         while True:
             messages_not_forward =  self.message_recieved - self.message_forward
-            for decide_sequence, value in list(messages_not_forward):
-                if int(decide_sequence) == self.forward_count:
-                    message = (decide_sequence, value)
-                    message = "forward:{},{}".format(*message)
-                    logging.info("{} {} is sending {} to acceptors and leaners".format(self.role, self.id, message))
-                    message = bytes(message, "utf-8")
-                    self.send_socket.sendto(message, self.config["acceptors"])
-                    self.send_socket.sendto(message, self.config["learners"])
-                    logging.info("{} {} self.forward_count in thread forward to learner is {}".format(self.role, self.id, self.forward_count))
+            if bool(messages_not_forward):
+                for decide_sequence, value in list(messages_not_forward):
+                    if int(decide_sequence) == self.forward_count:
+                        message = (decide_sequence, value)
+                        message = "forward:{},{}".format(*message)
+                        logging.info("{} {} is sending {} to leaners".format(self.role, self.id, message))
+                        message = bytes(message, "utf-8")
+                        self.send_socket.sendto(message, self.config["learners"])
+                        self.forward_count += 1
 
 
 
@@ -124,16 +132,30 @@ class Proposer(Role):
     def run(self):
         super().run()
         logging.info("{} {} starts running...".format(self.role, self.id))
-        with ThreadPoolExecutor() as executor:
-            executor.submit(self.living_heartbeat)
-            executor.submit(self.distribute_message_recieved)
+
+        threads = []
+
+        thread_living_heartbeat = threading.Thread(target=self.living_heartbeat, daemon=True)
+        thread_distribute_message = threading.Thread(target=self.distribute_message_recieved, daemon=True)
+        thread_decide_value = threading.Thread(target=self.decide_a_value, daemon=True)
+
+        threads.append(thread_living_heartbeat)
+        threads.append(thread_decide_value)
+        threads.append(thread_distribute_message)
+
+        for thread in threads:
+            thread.start()
+
+        while True:
+            time.sleep(1)
+            logging.info("Main Thread running...")
 
     def living_heartbeat(self):
         while True:
             message = "living:{}".format(self.id)
             message = bytes(message, "utf-8")
             self.send_socket.sendto(message, self.config["proposers"])
-            #logging.info("{} {} send heartbeat...".format(self.role, self.id))
+            # logging.info("{} {} send heartbeat...".format(self.role, self.id))
 
             time.sleep(1)
 
@@ -141,23 +163,52 @@ class Proposer(Role):
         handle_dict = {
             "living": self.handle_leader_consensus,
             "propose": self.handle_value_propose,
-            "Pforward": self.handle_value_forward,
             "Pdecide": self.handle_value_decide,         
         }
 
         while True:
 
-            #logging.info("{} {} handle recieving...".format(self.role, self.id))
+            # logging.info("{} {} handle recieving...".format(self.role, self.id))
 
             raw_message = self.recieve_socket.recv(2**16)
             raw_message = raw_message.decode("utf-8")
             tag, message = raw_message.split(":")
 
             handle_dict[tag](message)
-               
+
+    def decide_a_value(self):
+        while True:
+            if len(self.living_proposers_id) > 0:
+                break
+        while True:
+            leader_id = min(self.living_proposers_id)
+            
+            if self.id != leader_id:
+                continue
+            
+            messages_not_decided = self.message_proposed - self.message_decided
+            if bool(messages_not_decided) :
+                message_to_decide = messages_not_decided.pop()
+
+                _, value = message_to_decide
+                decide_message_to_acceptor = (self.decide_count, value)
+
+                raw_message = "decide:{},{}".format(*decide_message_to_acceptor)
+                logging.info("{} is sending {} to acceptors".format(self.role, raw_message))
+                raw_message = bytes(raw_message, "utf-8")
+                self.send_socket.sendto(raw_message, self.config["acceptors"])
+
+                raw_message = "Pdecide:{},{}".format(*message_to_decide)
+                logging.info("{} is sending {} to proposers".format(self.role, raw_message))
+                raw_message = bytes(raw_message, "utf-8")
+                self.send_socket.sendto(raw_message, self.config["proposers"])
+                
+                self.decide_count += 1
+                self.message_decided.add(message_to_decide)
+
     def handle_leader_consensus(self, message):
         id = int(message)
-        #logging.info("{} {} recieved living proposer {}".format(self.role, self.id, id))
+        # logging.info("{} {} recieved living proposer {}".format(self.role, self.id, id))
         time_now = time.time()
         if id not in self.living_proposers_id:
             self.living_proposers_id.append(id)
@@ -179,34 +230,11 @@ class Proposer(Role):
         
         if not message in self.message_proposed:
             self.message_proposed.add(message)
-
-        messages_not_decided = self.message_proposed - self.message_decided
-        message_to_decide = messages_not_decided.pop()
-
-        leader_id = min(self.living_proposers_id)          
-        if self.id != leader_id:
-            raw_message = "Pforward:{},{}".format(*message_to_decide)
-            logging.info("{} is sending {} to proposers".format(self.role, raw_message))
-            raw_message = bytes(raw_message, "utf-8") 
-            self.send_socket.sendto(raw_message, self.config["proposers"])           
-        else:
-            _, value = message_to_decide
-            decide_message_to_acceptor = (self.decide_count, value)
-
-            raw_message = "decide:{},{}".format(*decide_message_to_acceptor)
-            logging.info("{} is sending {} to acceptors".format(self.role, raw_message))
-            raw_message = bytes(raw_message, "utf-8")
-            self.send_socket.sendto(raw_message, self.config["acceptors"])
-
-            raw_message = "Pdecide:{},{}".format(*message_to_decide)
-            logging.info("{} is sending {} to proposers".format(self.role, raw_message))
+            raw_message = "propose:{},{}".format(*message)
+            logging.info("{} {} is sending {} to proposers".format(self.role, self.id, raw_message))
             raw_message = bytes(raw_message, "utf-8")
             self.send_socket.sendto(raw_message, self.config["proposers"])
-            
-            self.decide_count += 1
-            self.message_decided.add(message_to_decide)
-        
-            
+
     def handle_value_decide(self, message):
         message = tuple(message.split(','))
         logging.info("{} {} recieved Pdecide:{},{}".format(self.role, self.id, *message))
@@ -218,34 +246,6 @@ class Proposer(Role):
                 self.message_proposed.add(message)   
             if not message in self.message_decided:
                 self.message_decided.add(message)
-    
-    def handle_value_forward(self, message):
-        message = tuple(message.split(","))
-        logging.info("{} {} recieved Pforward:{},{}".format(self.role, self.id, *message))
-        leader_id = min(self.living_proposers_id)
-        if self.id == leader_id:
-            if not message in self.message_proposed:
-                self.message_proposed.add(message)
-                messages_not_decided = self.message_proposed - self.message_decided
-                message_to_decide = messages_not_decided.pop()
-
-                raw_message = "Pdecide:{},{}".format(*message_to_decide)
-                logging.info("{} is sending {} to proposers".format(self.role, raw_message))
-                raw_message = bytes(raw_message, "utf-8")
-                self.send_socket.sendto(raw_message, self.config["proposers"])
-
-                _, value = message_to_decide
-                decide_message_to_acceptor = (self.decide_count, value)
-
-                raw_message = "decide:{},{}".format(*decide_message_to_acceptor)
-                logging.info("{} is sending {} to acceptors".format(self.role, raw_message))
-                raw_message = bytes(raw_message, "utf-8")
-                self.send_socket.sendto(raw_message, self.config["acceptors"])
-
-                self.decide_count += 1
-                self.message_decided.add(message_to_decid)
-                
-
 
 
 class Learner(Role):
@@ -261,11 +261,21 @@ class Learner(Role):
     def run(self):
         super().run()
         logging.info("{} {} starts running...".format(self.role, self.id))
-        
-        with ThreadPoolExecutor() as executor:
-            executor.submit(self.write)
-            executor.submit(self.distribute_message_recieved)
-        
+
+        threads = []
+
+        thread_distribute_message = threading.Thread(target=self.distribute_message_recieved, daemon=True)
+        thread_write_value = threading.Thread(target=self.write, daemon=True)
+
+        threads.append(thread_write_value)
+        threads.append(thread_distribute_message)
+
+        for thread in threads:
+            thread.start()
+
+        while True:
+            time.sleep(1)
+            logging.info("Main Thread running...")
 
     def distribute_message_recieved(self):
 
@@ -274,7 +284,6 @@ class Learner(Role):
         }
         
         while True:
-
             logging.info("{} {} handle recieving...".format(self.role, self.id))
 
             raw_message = self.recieve_socket.recv(2**16)
@@ -291,6 +300,9 @@ class Learner(Role):
             self.message_recieved.sort(key=lambda message: int(message[0]))
 
     def write(self):
+        while True:
+            if len(self.message_recieved) > 0:
+                break
         while True:
             for sequence, message in self.message_recieved:
                 if int(sequence) == self.count:
@@ -320,7 +332,7 @@ class Client(Role):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.NOTSET)
+    logging.basicConfig(level=logging.WARNING)
     path_to_config = sys.argv[1]
     role = sys.argv[2]
     id = int(sys.argv[3])
