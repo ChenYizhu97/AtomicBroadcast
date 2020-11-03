@@ -76,7 +76,7 @@ class Acceptor(Role):
             thread.start()
 
         while True:
-            time.sleep(1)
+            time.sleep(5)
             logging.info("Main Thread running...")
     
     def distribute_message_recieved(self):
@@ -147,7 +147,7 @@ class Proposer(Role):
             thread.start()
 
         while True:
-            time.sleep(1)
+            time.sleep(5)
             logging.info("Main Thread running...")
 
     def living_heartbeat(self):
@@ -259,6 +259,7 @@ class Learner(Role):
         self.count = 0
 
     def run(self):
+        """Run threads of the learner"""
         super().run()
         logging.info("{} {} starts running...".format(self.role, self.id))
 
@@ -274,13 +275,15 @@ class Learner(Role):
             thread.start()
 
         while True:
-            time.sleep(1)
+            time.sleep(5)
             logging.info("Main Thread running...")
 
     def distribute_message_recieved(self):
 
         handle_dict = {
             "forward": self.handle_forward,
+            "catchupReq": self.send_catchup_response,
+            "catchupRes": self.handle_catchup_response,
         }
         
         while True:
@@ -295,9 +298,43 @@ class Learner(Role):
     def handle_forward(self, message):
         message = tuple(message.split(","))
         logging.info("{} {} recieved forward:{},{}".format(self.role, self.id, *message))
-        if not message in self.message_recieved:
-            self.message_recieved.append(message)
-            self.message_recieved.sort(key=lambda message: int(message[0]))
+
+        sequence, value = message
+
+        if int(sequence) >= self.count:
+            if not message in self.message_recieved:
+                self.message_recieved.append(message)
+            if int(sequence) > self.count:
+                raw_message = "catchupReq:{}".format(self.count)
+                logging.info("{} {} send catchup request {} to learners".format(self.role, self.id, raw_message))
+                raw_message = bytes(raw_message, "utf-8")
+                self.send_socket.sendto(raw_message, self.config["learners"])
+
+    def send_catchup_response(self, message):
+        request_sequence = int(message)
+        logging.info("{} {} received catchup request of sequence {}".format(self.role, self.id, request_sequence))
+        response_list = []
+        for message in self.message_recieved:
+            sequence, value = message
+            if int(sequence) >= request_sequence:
+                response_str="{}.{}".format(sequence,value)
+                response_list.append(response_str)
+        raw_message = ";".join(response_list)
+        raw_message = "catchupRes:{},{}".format(request_sequence, raw_message) 
+        logging.info("{} {} send catchup response {} to learners".format(self.role, self.id, raw_message))
+        raw_message = bytes(raw_message, "utf-8")
+
+        self.send_socket.sendto(raw_message, self.config["learners"])
+
+    def handle_catchup_response(self, message):
+        request_sequence, response = tuple(message.split(","))
+        if int(request_sequence) == self.count:
+            logging.info("{} {} recieved catup response of sequence {}: {}".format(self.role, self.id, request_sequence, response))
+            messages = [tuple(message.split(".")) for message in response.split(";")]
+            for message in messages:
+                if not message in self.message_recieved:
+                    self.message_recieved.append(message)
+
 
     def write(self):
         while True:
