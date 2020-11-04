@@ -21,7 +21,7 @@ cd AtomicBroadcast
 ...
 ```
 
-You can replace test/paxo.con with the path of your config file.
+You can replace test/paxo.conf with the path of your config file.
 
 ## Use the test script in directory test
 ```shell

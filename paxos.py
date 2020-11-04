@@ -154,10 +154,12 @@ class Acceptor(Role):
 
         Message type
         "decide:(seq,value)": The message representing value is decided at time seq.
+        "catchupReq:seq": request sent by learner for asking messages that are later than seq.
         """
 
         handle_dict = {
             "decide": self.handle_decide,
+            "catchupReq":self.send_catchup_response,
         }
 
         while True:
@@ -180,6 +182,25 @@ class Acceptor(Role):
         logging.info("{} {} received decide:{},{}".format(self.role, self.id, *message))
         if not message in self.message_received:
             self.message_received.add(message)
+
+    def send_catchup_response(self, message):
+        """If this acceptor has the missed messages, send a response contain these messages."""
+
+        request_sequence = int(message)
+        logging.info("{} {} received catchup request of sequence {}".format(self.role, self.id, request_sequence))
+        response_list = []
+        for message in self.message_received:
+            sequence, value = message
+            if int(sequence) >= request_sequence:
+                response_str = "{}.{}".format(sequence, value)
+                response_list.append(response_str)
+        if len(response_list) > 0:
+            raw_message = ";".join(response_list)
+            raw_message = "catchupRes:{},{}".format(request_sequence, raw_message)
+            logging.info("{} {} send catchup response {} to learners".format(self.role, self.id, raw_message))
+            raw_message = bytes(raw_message, "utf-8")
+
+            self.send_socket.sendto(raw_message, self.config["learners"])
 
     def forward_to_learner(self):
         """Forward the message received but not forwarded in their decided order."""
@@ -418,13 +439,11 @@ class Learner(Role):
 
         Message type
             "forward:(seq,value)": message forwarded by acceptor.
-            "catchupReq:seq": request sent by learner for asking messages that are later than seq.
             "catchupRes:seq,seq.value;[seq.value;]+" response contain missed messages.
         """
 
         handle_dict = {
             "forward": self.handle_forward,
-            "catchupReq": self.send_catchup_response,
             "catchupRes": self.handle_catchup_response,
         }
         
@@ -439,7 +458,7 @@ class Learner(Role):
 
     def handle_forward(self, message):
         """If the message is not received before, keep it. If the seq of the message received is great than self.count,
-        then ask other learners for the missed messages.
+        then ask acceptors for the missed messages.
         """
 
         message = tuple(message.split(","))
@@ -452,28 +471,9 @@ class Learner(Role):
                 self.message_received.append(message)
             if int(sequence) > self.count:
                 raw_message = "catchupReq:{}".format(self.count)
-                logging.info("{} {} send catchup request {} to learners".format(self.role, self.id, raw_message))
+                logging.info("{} {} send catchup request {} to acceptors".format(self.role, self.id, raw_message))
                 raw_message = bytes(raw_message, "utf-8")
-                self.send_socket.sendto(raw_message, self.config["learners"])
-
-    def send_catchup_response(self, message):
-        """If this learner has the missed messages, send a response contain these messages."""
-
-        request_sequence = int(message)
-        logging.info("{} {} received catchup request of sequence {}".format(self.role, self.id, request_sequence))
-        response_list = []
-        for message in self.message_received:
-            sequence, value = message
-            if int(sequence) >= request_sequence:
-                response_str = "{}.{}".format(sequence, value)
-                response_list.append(response_str)
-        if len(response_list) > 0:
-            raw_message = ";".join(response_list)
-            raw_message = "catchupRes:{},{}".format(request_sequence, raw_message)
-            logging.info("{} {} send catchup response {} to learners".format(self.role, self.id, raw_message))
-            raw_message = bytes(raw_message, "utf-8")
-
-            self.send_socket.sendto(raw_message, self.config["learners"])
+                self.send_socket.sendto(raw_message, self.config["acceptors"])
 
     def handle_catchup_response(self, message):
         """If the request is sent by this learner, keep the messages in response."""
@@ -536,7 +536,7 @@ if __name__ == "__main__":
     """Initialize new role with parameters given."""
 
     # set level = logging.INFO if you want to see detailed log.
-    logging.basicConfig(level=logging.WARNING)
+    logging.basicConfig(level=logging.INFO)
 
     # parse path of config file, type of role and it's id.
     path_to_config = sys.argv[1]
