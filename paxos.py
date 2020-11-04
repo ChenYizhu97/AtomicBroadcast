@@ -536,7 +536,7 @@ if __name__ == "__main__":
     """Initialize new role with parameters given."""
 
     # set level = logging.INFO if you want to see detailed log.
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.WARNING)
 
     # parse path of config file, type of role and it's id.
     path_to_config = sys.argv[1]
