@@ -12,7 +12,7 @@ Role: Basic Role class, defining common methods, properties and utility function
 Acceptor: Acceptor role class, defining the behavior and properties of role acceptor in our protocol.
 Proposer: Proposer role class, defining the behavior and properties of role proposer in our protocol.
 Learner: Learner role class, defining the behavior and properties of role learner in our protocol.
-Client: Learner role class, defining role client for producing data.
+Client: Client role class, defining role client for producing data.
 """
 
 
@@ -67,7 +67,7 @@ class Role(object):
         self.receive_socket = receive_socket
     
     def _set_multicast_sender(self):
-        """Set socket for send message"""
+        """Set socket for send messages"""
 
         send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         self.send_socket = send_socket
@@ -150,10 +150,10 @@ class Acceptor(Role):
             logging.info("Main Thread running...")
     
     def distribute_message_received(self):
-        """Distribute message to different handle functions based on their tags.
+        """Distribute messages to different handle functions based on their tags.
 
         Message type
-        "decide:(seq,value)": The message representing value is decided at time seq.
+        "decide:seq,value": The message representing a value is decided at time seq.
         "catchupReq:seq": request sent by learner for asking messages that are later than seq.
         """
 
@@ -203,7 +203,7 @@ class Acceptor(Role):
             self.send_socket.sendto(raw_message, self.config["learners"])
 
     def forward_to_learner(self):
-        """Forward the message received but not forwarded in their decided order."""
+        """Forward the messages received but not forwarded in their decided order."""
 
         while True:
             messages_not_forward = self.message_received - self.message_forward
@@ -232,9 +232,9 @@ class Proposer(Role):
 
     Public method
     run: Defining the behavior of proposer. The proposer will start three threads.
-            One send heart beat to other proposers for selecting the leader.
+            One sends heart beat to other proposers for selecting the leader.
             Another distributes messages based on their tags.
-            The last decide a value and forward the decision each time if this proposer is a leader.
+            The last decides a value and forwards the decision each time if this proposer is a leader.
     """
     def __init__(self, config, id):
         host_port = config['proposers']
@@ -250,7 +250,7 @@ class Proposer(Role):
         self.decide_count = 0
 
     def run(self):
-        """Select leader, make decision and produce messages received"""
+        """Select leader, make decision and handle messages received"""
 
         super().run()
         logging.info("{} {} starts running...".format(self.role, self.id))
@@ -414,7 +414,7 @@ class Learner(Role):
         self.count = 0
 
     def run(self):
-        """Writing value in total order. Ask other learners for messages if it finds itself missing some messages."""
+        """Write value in total order. Ask other learners for messages if it finds itself missing some messages."""
 
         super().run()
         logging.info("{} {} starts running...".format(self.role, self.id))
@@ -438,7 +438,7 @@ class Learner(Role):
         """Distribute messages to different handle functions based on their tags.
 
         Message type
-            "forward:(seq,value)": message forwarded by acceptor.
+            "forward:seq,value": message forwarded by acceptor.
             "catchupRes:seq,seq.value;[seq.value;]+" response contain missed messages.
         """
 
